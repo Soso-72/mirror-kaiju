@@ -1,0 +1,145 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum OfficerRole {
+  QC
+  LC
+  CD
+}
+
+enum RouteType {
+  adjacent
+  maritime
+}
+
+enum TransferStatus {
+  pending
+  approved
+  rejected
+  completed
+}
+
+// Suivi du Niveau de Catastrophe Globale (1 à 5) (§7)
+model DisasterState {
+  id                        Int     @id @default(1)
+  level                     Int     @default(1) // 1: Watch, 2: Alert, 3: Emergency, 4: Critical, 5: Catastrophic
+  isRetentionOverrideActive Boolean @default(false) @map("is_retention_override_active") // Activé uniquement par le CD au Niveau 5 (§4)
+  updatedAt                 DateTime @updatedAt @map("updated_at")
+
+  @@map("disaster_state")
+}
+
+model District {
+  id   Int    @id @default(autoincrement())
+  name String @unique
+
+  users          User[]
+  resourceStocks ResourceStock[]
+  calendarEvents CalendarEvent[]
+
+  transfersFrom    Transfer[] @relation("SourceDistrict")
+  transfersTo      Transfer[] @relation("DestinationDistrict")
+  transfersTransit Transfer[] @relation("TransitDistrict")
+
+  adjacentTo   DistrictAdjacency[] @relation("District")
+  adjacentFrom DistrictAdjacency[] @relation("AdjacentDistrict")
+
+  @@map("districts")
+}
+
+model DistrictAdjacency {
+  districtId         Int       @map("district_id")
+  adjacentDistrictId Int       @map("adjacent_district_id")
+  routeType          RouteType @default(adjacent) @map("route_type")
+
+  district         District @relation("District", fields: [districtId], references: [id])
+  adjacentDistrict District @relation("AdjacentDistrict", fields: [adjacentDistrictId], references: [id])
+
+  @@id([districtId, adjacentDistrictId])
+  @@map("district_adjacency")
+}
+
+model User {
+  id           Int         @id @default(autoincrement())
+  email        String      @unique
+  passwordHash String      @map("password_hash")
+  role         OfficerRole
+  districtId   Int?        @map("district_id")
+  createdAt    DateTime    @default(now()) @map("created_at")
+
+  district       District?       @relation(fields: [districtId], references: [id])
+  transfers      Transfer[]      @relation("RequestedBy")
+  calendarEvents CalendarEvent[]
+
+  @@map("users")
+}
+
+model ResourceType {
+  id   Int    @id @default(autoincrement())
+  name String @unique
+
+  resourceStocks ResourceStock[]
+  transfers      Transfer[]
+
+  @@map("resource_types")
+}
+
+model ResourceStock {
+  id                 Int @id @default(autoincrement())
+  districtId         Int @map("district_id")
+  resourceTypeId     Int @map("resource_type_id")
+  quantity           Int @map("quantity")           // Stock actuel disponible
+  initialQuantity    Int @map("initial_quantity")   // Stock initial de référence pour le calcul du seuil (30% / 15%) (§4)
+  retentionThreshold Int @default(0) @map("retention_threshold")
+
+  district     District     @relation(fields: [districtId], references: [id])
+  resourceType ResourceType @relation(fields: [resourceTypeId], references: [id])
+
+  @@unique([districtId, resourceTypeId])
+  @@map("resource_stock")
+}
+
+model Transfer {
+  id                    Int            @id @default(autoincrement())
+  resourceTypeId        Int            @map("resource_type_id")
+  quantity              Int
+  sourceDistrictId      Int            @map("source_district_id")
+  destinationDistrictId Int            @map("destination_district_id")
+  
+  // Nouveaux champs requis pour la topologie & transit (§2, §6)
+  transitDistrictId     Int?           @map("transit_district_id")
+  isMaritime            Boolean        @default(false) @map("is_maritime")
+  
+  requestedById         Int            @map("requested_by")
+  status                TransferStatus @default(pending)
+  rejectionReason       String?        @map("rejection_reason")
+  requestedAt           DateTime       @default(now()) @map("requested_at")
+
+  resourceType        ResourceType @relation(fields: [resourceTypeId], references: [id])
+  sourceDistrict       District     @relation("SourceDistrict", fields: [sourceDistrictId], references: [id])
+  destinationDistrict  District     @relation("DestinationDistrict", fields: [destinationDistrictId], references: [id])
+  transitDistrict      District?    @relation("TransitDistrict", fields: [transitDistrictId], references: [id])
+  requestedBy          User         @relation("RequestedBy", fields: [requestedById], references: [id])
+
+  @@map("transfers")
+}
+
+model CalendarEvent {
+  id          Int      @id @default(autoincrement())
+  districtId  Int?     @map("district_id")
+  title       String
+  startTime   DateTime @map("start_time")
+  endTime     DateTime @map("end_time")
+  createdById Int      @map("created_by")
+
+  district  District? @relation(fields: [districtId], references: [id])
+  createdBy User      @relation(fields: [createdById], references: [id])
+
+  @@map("calendar_events")
+}
